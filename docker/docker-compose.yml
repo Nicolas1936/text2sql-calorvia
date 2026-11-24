@@ -1,0 +1,97 @@
+# Calorvia SA: the three data sources of the text-to-SQL project.
+#
+#   ERP GesPro 7      SQL Server 2022   localhost:14330  database GESPRO
+#   Accounting        PostgreSQL 16     localhost:5433   database compta
+#   Payroll           PostgreSQL 16     localhost:5434   database paie
+#
+# Usage (from this folder):  cp .env.example .env   then   docker compose up -d
+# The databases are restored on the first start only. To start again from scratch: docker compose down -v
+
+name: calorvia-sources
+
+services:
+  erp-sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    container_name: calorvia-erp
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+    ports:
+      - "14330:1433"
+    volumes:
+      - erp-data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -C -b -Q 'SELECT 1' > /dev/null 2>&1 || /opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P \"$${MSSQL_SA_PASSWORD}\" -C -b -Q 'SELECT 1' > /dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  # SQL Server has no init folder like PostgreSQL: a one-shot container runs the script with sqlcmd
+  erp-restore:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    platform: linux/amd64
+    container_name: calorvia-erp-restore
+    depends_on:
+      erp-sqlserver:
+        condition: service_healthy
+    environment:
+      MSSQL_HOST: erp-sqlserver
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD}
+      AGENT_RO_PASSWORD: ${AGENT_RO_PASSWORD}
+      FORCE_RESTORE: ${FORCE_RESTORE:-0}
+    volumes:
+      - ../sql/01_erp_gespro_sqlserver.sql:/restore/01_erp_gespro_sqlserver.sql:ro
+      - ./sqlserver/restore_erp.sh:/restore/restore_erp.sh:ro
+    entrypoint: ["/bin/bash", "/restore/restore_erp.sh"]
+    restart: "no"
+
+  compta-postgres:
+    image: postgres:16
+    container_name: calorvia-compta
+    environment:
+      POSTGRES_DB: compta
+      POSTGRES_USER: ${PG_ADMIN_USER}
+      POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD}
+      AGENT_RO_PASSWORD: ${AGENT_RO_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - compta-data:/var/lib/postgresql/data
+      - ./postgres/00_create_role.sh:/docker-entrypoint-initdb.d/00_create_role.sh:ro
+      - ../sql/02_compta_postgres.sql:/docker-entrypoint-initdb.d/10_compta.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d compta"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+  paie-postgres:
+    image: postgres:16
+    container_name: calorvia-paie
+    environment:
+      POSTGRES_DB: paie
+      POSTGRES_USER: ${PG_ADMIN_USER}
+      POSTGRES_PASSWORD: ${PG_ADMIN_PASSWORD}
+      AGENT_RO_PASSWORD: ${AGENT_RO_PASSWORD}
+    ports:
+      - "5434:5432"
+    volumes:
+      - paie-data:/var/lib/postgresql/data
+      - ./postgres/00_create_role.sh:/docker-entrypoint-initdb.d/00_create_role.sh:ro
+      - ../sql/03_paie_postgres.sql:/docker-entrypoint-initdb.d/10_paie.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d paie"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: unless-stopped
+
+volumes:
+  erp-data:
+  compta-data:
+  paie-data:
